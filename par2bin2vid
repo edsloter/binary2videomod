@@ -81,13 +81,6 @@ if [[ -z "${codec_options[$codec]:-}" ]]; then
 fi
 ffmpeg_codec_opts="${codec_options[$codec]}"
 
-# Debug: show remaining arguments after option parsing
-if [[ $verbose -eq 1 ]]; then
-    echo "Remaining args: $@"
-    echo "Count: $#"
-    echo "Some Shit is fucked up, Check again"
-fi
-
 # --- Input/Output Validation ---
 # Ensure exactly two positional arguments (input and output files)
 if [[ $# -ne 2 ]]; then
