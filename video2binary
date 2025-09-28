@@ -1,62 +1,119 @@
 #!/usr/bin/env bash
+#
+# vid2bin: Reverses the bin2vid process to extract the original binary file.
+# The script reads an 8-byte header to determine the original file size
+# and correctly truncates the decoded raw video stream.
 
-usage_and_exit () {
-    echo "Usage: video2binary [-v] infile outfile"
-    exit $1
+# --- Functions ---
+
+usage_and_exit() {
+    echo "Usage: $(basename "$0") [-v] infile outfile" >&2
+    exit "$1"
 }
-check_executable_or_exit() {
-    if [ ! -x $1 ]; then
-        echo "error: no $(basename $1) at $gzip"
+
+check_dependencies() {
+    if ! command -v ffmpeg &> /dev/null; then
+        echo "error: required command 'ffmpeg' not found." >&2
+        exit 2
+    fi
+    # Add check for xxd
+    if ! command -v xxd &> /dev/null; then
+        echo "error: required command 'xxd' not found." >&2
         exit 2
     fi
 }
 
-if [ \( $# -eq 1 \) -a \( "$1" = '--help' \) ]; then
-   usage_and_exit 0
+# --- Main logic ---
+
+# Check for help flag early
+if [[ "${1:-}" = '--help' ]]; then
+    usage_and_exit 0
 fi
 
-# check needed binaries
-gzip=/usr/bin/gzip
-check_executable_or_exit $gzip
-ffmpeg=/usr/bin/ffmpeg
-check_executable_or_exit $ffmpeg
+# Check for required binaries
+check_dependencies
 
-# check parameters
+# --- Argument parsing ---
 verbose=0
 while getopts 'v' option; do
     case "$option" in
-    v) verbose=1;;
-    ?) usage_and_exit 1;;
+        v) verbose=1;;
+        ?) usage_and_exit 1;;
     esac
 done
-shift $(($OPTIND - 1))
+shift $((OPTIND - 1))
 
-if [ $# != 2 ]; then
+# --- Input/Output validation ---
+if [[ $# -ne 2 ]]; then
     usage_and_exit 1
 fi
-if [ ! -r "$1" ]; then
-    echo "error: file '$1' does not exist or is not readable"
-    exit 4
-fi
-
-tmpfile_gzipped=$(mktemp --tmpdir video2binary.gz.XXXXXXXXXX)
 
 infile="$1"
 outfile="$2"
-pixel_format=rgb24
 
-$ffmpeg -y -hide_banner -loglevel error \
-    -i "${infile}" -f rawvideo -pix_fmt rgb24 "${tmpfile_gzipped}"
-size_gzipped=$(stat --format=%s ${tmpfile_gzipped})
-if [ $verbose = 1 ]; then
-    echo "gzipped file has $size_gzipped bytes"
+if [[ ! -r "$infile" ]]; then
+    echo "error: file '$infile' does not exist or is not readable" >&2
+    exit 4
 fi
 
-$gzip -d -c "${tmpfile_gzipped}" > "${outfile}"
-if [ $verbose = 1 ]; then
-    echo "output file has $(stat --format=%s "${outfile}") bytes"
-    echo -n "output file MD5: "
-    md5sum "${outfile}" | cut -d\  -f1
+# --- Main process ---
+pixel_format="rgb24"
+header_size=8 # The size of our header in bytes (64-bit integer)
+
+# Create a temporary file to store the decoded raw video stream
+tmpfile_decoded=$(mktemp --tmpdir vid2bin.raw.XXXXXXXXXX)
+trap 'rm -f "$tmpfile_decoded"' EXIT # Ensure cleanup
+
+if [[ "$verbose" -eq 1 ]]; then
+    echo "Decoding video stream from '$infile' to temporary file '$tmpfile_decoded'"
 fi
 
-rm ${tmpfile_gzipped}
+# Decode the video stream to the temporary file
+# The `ffmpeg` command should be correct and complete here
+ffmpeg -y -hide_banner -loglevel error -i "${infile}" -f rawvideo -pix_fmt "${pixel_format}" "${tmpfile_decoded}" || {
+    echo "error: ffmpeg failed to decode the video stream." >&2
+    exit 5
+}
+
+# Read the header from the beginning of the temporary file
+# Ensure the `original_size_hex` is a clean hexadecimal string
+original_size_hex=$(head -c "${header_size}" "${tmpfile_decoded}" | xxd -p | tr -d '\n' | sed 's/^0*//') # remove leading zeros
+if [[ -z "$original_size_hex" ]]; then
+    original_size_hex="0" # Handle empty header as size 0 for error checking
+fi
+
+# Convert hexadecimal string to decimal
+original_size_dec=$((16#$original_size_hex))
+
+if [[ "$verbose" -eq 1 ]]; then
+    echo "Original file size from header (hex): $original_size_hex"
+    echo "Original file size from header (dec): $original_size_dec"
+fi
+
+# Check for potential header corruption or an incorrect file
+if [[ "$original_size_dec" -eq 0 && "$original_size_hex" != "0" ]]; then
+    echo "error: failed to read a valid file size from header. Is the input file valid or was it encoded correctly by bin2vid?" >&2
+    exit 6
+fi
+
+# Extract the actual data (after the header) and truncate to the original size
+if [[ "$verbose" -eq 1 ]]; then
+    echo "Extracting $original_size_dec bytes from the decoded stream (skipping the first $header_size bytes) to '$outfile'"
+fi
+
+dd if="${tmpfile_decoded}" of="${outfile}" bs=1 skip="${header_size}" count="${original_size_dec}" status=none || {
+    echo "error: failed to extract data using dd." >&2
+    exit 7
+}
+
+# --- Post-process ---
+if [[ "$verbose" -eq 1 ]]; then
+    if [[ -f "$outfile" ]]; then
+        echo "Output file has $(stat -c %s "${outfile}") bytes"
+        echo -n "Output file MD5: "
+        md5sum "${outfile}" | awk '{print $1}'
+    else
+        echo "error: output file was not created" >&2
+        exit 8
+    fi
+fi
