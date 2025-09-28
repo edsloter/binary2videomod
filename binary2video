@@ -80,43 +80,47 @@ fi
 
 # --- Main process ---
 pixel_format=rgb24
+header_size=8
 blocksize=$((width * height * 3))
+size_infile=$(stat -c %s "${infile}")
 
 if [[ $verbose -eq 1 ]]; then
     echo "parameters: fps=$framerate width=$width height=$height codec=$codec"
     echo "blocksize is $blocksize bytes"
+    echo "input file has $size_infile bytes"
     echo "input file MD5: $(md5sum "$infile" | awk '{print $1}')"
 fi
 
-# --- Temporary file handling ---
-# Create a temporary directory and set a trap to clean it up on exit
+# --- Header creation and padding using a temporary file ---
 tmpdir=$(mktemp -d --tmpdir binary2video.XXXXXXXXXX)
 trap 'rm -rf "$tmpdir"' EXIT
-
 tmpfile_padded="$tmpdir/infile.padded"
 
-# Pad the file efficiently using a Bash builtin
-size_infile=$(stat -c %s "${infile}")
-padding_needed=$((blocksize - (size_infile % blocksize)))
+# A more reliable way to create an 8-byte header from the file size
+# This avoids issues with shell commands handling binary data and null bytes.
+{ printf '%016x' "$size_infile"; } | xxd -r -p > "${tmpfile_padded}"
+cat "${infile}" >> "${tmpfile_padded}"
+
+# Calculate and apply padding
+size_with_header=$(stat -c %s "${tmpfile_padded}")
+padding_needed=$((blocksize - (size_with_header % blocksize)))
 if [[ padding_needed -eq blocksize ]]; then
     padding_needed=0
 fi
 
 if [[ $verbose -eq 1 ]]; then
-    echo "input file has $size_infile bytes"
+    echo "header has $header_size bytes"
     echo "padding needed: $padding_needed bytes"
 fi
 
-# Create the padded file
-{ cat "${infile}"; printf '\0%.0s' $(seq 1 "$padding_needed")
-} > "${tmpfile_padded}"
+# Append padding bytes
+printf '\0%.0s' $(seq 1 "$padding_needed") >> "${tmpfile_padded}"
 
-size_padded=$(stat -c %s "${tmpfile_padded}")
 if [[ $verbose -eq 1 ]]; then
-    echo "padded file has $size_padded bytes"
+    echo "padded file has $(stat -c %s "${tmpfile_padded}") bytes"
 fi
 
-# Run ffmpeg command using the temporary file as input
+# Run ffmpeg command using the temporary padded file as input
 ffmpeg_log_level="error"
 if [[ $verbose -eq 1 ]]; then
     ffmpeg_log_level="info"
@@ -131,6 +135,8 @@ ffmpeg -y -hide_banner -loglevel "$ffmpeg_log_level" \
 if [[ $verbose -eq 1 ]]; then
     if [[ -f "$outfile" ]]; then
         echo "output file has $(stat -c %s "${outfile}") bytes"
+        echo -n "output file MD5: "
+        md5sum "${outfile}" | awk '{print $1}'
     else
         echo "error: output file was not created" >&2
         exit 5
