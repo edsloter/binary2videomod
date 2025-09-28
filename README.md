@@ -1,11 +1,44 @@
+2 mods are provided here, the original just removing the gzip and adding a file header, then a major overhaul to add par2 support and logic. 
+
 This is modified from https://github.com/hbhbnr/binary2video
 
 
-1) I've modified to prepend a fixed-size header to the binary data before sending it to FFmpeg. This header will contain the file size information. This is needed to correctly decode as buffer data is added to ensure the total size is a multiple of the video frame size, and removes the need to gzip the input file as the original script did. 
-2) added H265 with lossless tag
-3) modified video2binay logic to read the header for correct original file size and trim the unneeded buffer data to ensure the file matches the original input, also removed the need to un-gzip.
+1) I've modified to prepend a fixed-size header to the binary data before sending it to FFmpeg. This header will contain the file size information. This is needed to correctly decode as buffer data is added to ensure the total size is a multiple of the video frame size, and removes the need to gzip the input file as the original script did.
+2) added multithreading on ffmpeg globally with -t argument (default is -t 0 max available)
+3) added H265 with lossless tag
+4) modified video2binay logic to read the header for correct original file size and trim the unneeded buffer data to ensure the file matches the original input, also removed the need to un-gzip.
 
 usage remains the same, but now you can use -c h265
+
+4) par2bin2vid and vid2par2bin add support for redundancy creation via par2, I figure you can never go wrong, going to try testing it on some video sharing sites to see if things are recoverable after re-encoding
+   -p #% par2 parity argument (0-100) see usage below
+   -p is used only when encoding for parity creation, -r is used for repair when decoding. 
+   
+usage:
+```
+// first install dependencies,
+```
+sudo apt install ffmpeg par2 -y 
+```
+// copy par2bin2vid and vid2par2bin to your working directory
+// make executable
+```
+chmod +x par2bin2vid vid2par2bin
+```
+```
+_
+```
+// usage for encoding
+```
+./par2bin2vid -v -t 16 -p 20 -f 0.5 -w 1920 -l 1080 -c h265 file.7z video.mkv
+```
+// usage for decoding
+```
+./vid2par2bin -v -r h265.mkv linux.iso
+```
+
+
+
 
 ------------------------------------------------------------------------------------------------------------------------------------------------------
 original readme below: 
