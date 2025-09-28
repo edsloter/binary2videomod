@@ -1,1 +1,197 @@
-.
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# --- Usage and Dependency Checks ---
+
+usage_and_exit() {
+    # Print usage information and exit with the given code
+echo "Usage: $(basename "$0") [-f fps] [-w width] [-h height] [-c codec] [-p par2_percent] [-t threads] [-v verbose] infile outfile" >&2
+echo "  Defaults: fps=1 width=320 height=240 codec=vp9 percent=0 threads=0 (use all cores) verbose off" >&2
+    echo "  Supported codecs: vp9, h264, h265, ffv1, ffv1l3" >&2
+    echo " mod Created by Ed Sloter (edsloter #a# gmail !dot! com)" >&2"
+    echo " mod added support for h265 with -c h265 option" >&2"
+    echo " mod added multi-threading support with -t option" >&2"
+    echo " mod added par2 recovery data can be applied with -p option (0-100)" >&2"
+    exit "$1"
+}
+
+check_dependencies() {
+    # Ensure required commands are available
+    if ! command -v ffmpeg &> /dev/null; then
+        echo "error: required command 'ffmpeg' not found." >&2
+        exit 2
+    fi
+    if ! command -v xxd &> /dev/null; then
+        echo "error: required command 'xxd' not found." >&2
+        exit 2
+    fi
+    if [[ $par2_percent -gt 0 ]] && ! command -v par2 &> /dev/null; then
+        echo "error: required command 'par2' not found for recovery data." >&2
+        exit 2
+    fi
+}
+
+# --- Main logic ---
+
+# Print help and exit if requested
+if [[ "${1:-}" = '--help' ]]; then
+    usage_and_exit 0
+fi
+
+# --- Argument Parsing ---
+# Set default values for all options
+width=320
+height=240
+framerate=1
+codec="vp9"
+verbose=0 # Verbose mode off by default 
+par2_percent=0 # Default PAR2 recovery percentage (0-100)
+threads=0  # Default number of threads (0 is maximum available)
+
+# Parse command-line options
+while getopts 'f:w:h:c:p:t:v' option; do
+    case "$option" in
+        f) framerate="$OPTARG";;
+        w) width="$OPTARG";;
+        h) height="$OPTARG";;
+        c) codec="$OPTARG";;
+        p) par2_percent="$OPTARG";;
+        v) verbose=1;;
+        t) threads="$OPTARG";;   # Parse threads option
+        ?) usage_and_exit 1;;
+    esac
+done
+shift $((OPTIND - 1))
+
+# --- Codec Options ---
+# Map codec names to ffmpeg options
+declare -A codec_options=(
+    ["vp9"]="-c:v libvpx-vp9 -lossless 1"
+    ["h264"]="-c:v libx264rgb -preset ultrafast -qp 0"
+    ["h265"]="-c:v libx265 -x265-params lossless=1"
+    ["ffv1"]="-c:v ffv1 -level 1 -coder 1 -context 1 -g 1"
+    ["ffv1l3"]="-c:v ffv1 -level 3 -coder 1 -context 1 -g 1 -slices 24 -slicecrc 1"
+)
+
+# Validate codec selection
+if [[ -z "${codec_options[$codec]:-}" ]]; then
+    echo "error: unknown codec '$codec'" >&2
+    usage_and_exit 3
+fi
+ffmpeg_codec_opts="${codec_options[$codec]}"
+
+# Debug: show remaining arguments after option parsing
+if [[ $verbose -eq 1 ]]; then
+    echo "Remaining args: $@"
+    echo "Count: $#"
+    echo "Some Shit is fucked up, Check again"
+fi
+
+# --- Input/Output Validation ---
+# Ensure exactly two positional arguments (input and output files)
+if [[ $# -ne 2 ]]; then
+    usage_and_exit 1
+fi
+
+infile="$1"
+outfile="$2"
+
+# Check that input file exists and is readable
+if [[ ! -r "$infile" ]]; then
+    echo "error: file '$infile' does not exist or is not readable" >&2
+    exit 4
+fi
+
+# Check for required dependencies
+check_dependencies
+
+# --- Video and Data Parameters ---
+pixel_format=rgb24
+header_size=8
+blocksize=$((width * height * 3)) # Number of bytes per video frame
+size_infile=$(stat -c %s "${infile}")
+
+if [[ $verbose -eq 1 ]]; then
+    echo "parameters: fps=$framerate width=$width height=$height codec=$codec par2_percent=$par2_percent"
+    echo "blocksize is $blocksize bytes"
+    echo "input file has $size_infile bytes"
+    echo "input file MD5: $(md5sum "$infile" | awk '{print $1}')"
+fi
+
+# --- Temporary Working Directory ---
+# Create a temporary directory for intermediate files
+tmpdir=$(mktemp -d --tmpdir binary2video.XXXXXXXXXX)
+trap 'rm -rf "$tmpdir"' EXIT
+tmpfile_padded="$tmpdir/infile.padded"
+
+# --- Header and Binary Data ---
+# Write an 8-byte header (original file size) to the padded file
+{ printf '%016x' "$size_infile"; } | xxd -r -p > "${tmpfile_padded}"
+
+# --- PAR2 Recovery Data ---
+if [[ $par2_percent -gt 0 ]]; then
+    # If PAR2 is requested, copy infile to temp and rename to infile.binary for consistency
+    tmp_infile="$tmpdir/infile.binary"
+    cp "$infile" "$tmp_infile"
+    # Append the copied binary to the padded file
+    cat "$tmp_infile" >> "${tmpfile_padded}"
+    par2_prefix="infile" # Use 'infile' as the prefix for PAR2 files
+    (
+        cd "$tmpdir"
+        par2 create -q -r$par2_percent -n1 "${par2_prefix}" "infile.binary"
+    )
+    # Concatenate all PAR2 files generated in temp
+    for par2file in "$tmpdir"/${par2_prefix}.vol*.par2; do
+        if [[ -f "$par2file" ]]; then
+            cat "$par2file" >> "$tmpfile_padded"
+            if [[ $verbose -eq 1 ]]; then
+                echo "Concatenated $par2file, size: $(stat -c %s "$par2file") bytes"
+            fi
+            rm -f "$par2file"
+        fi
+    done
+else
+    # If PAR2 is not requested, just append the original infile
+    cat "$infile" >> "${tmpfile_padded}"
+fi
+
+# --- Padding (always after PAR2 if present) ---
+# Calculate and add padding so the total file size is a multiple of the frame size
+size_for_padding=$(stat -c %s "${tmpfile_padded}")
+padding_needed=$((blocksize - (size_for_padding % blocksize)))
+if [[ $padding_needed -eq $blocksize ]]; then
+    padding_needed=0
+fi
+printf '\0%.0s' $(seq 1 "$padding_needed") >> "${tmpfile_padded}"
+
+if [[ $verbose -eq 1 ]]; then
+    echo "final padded file has $(stat -c %s "${tmpfile_padded}") bytes"
+    echo "final padding applied: $padding_needed bytes"
+fi
+
+# --- Video Encoding ---
+# Encode the padded file as a lossless video using ffmpeg
+ffmpeg_log_level="error"
+if [[ $verbose -eq 1 ]]; then
+    ffmpeg_log_level="info"
+fi
+
+ffmpeg -y -hide_banner -loglevel "$ffmpeg_log_level" \
+    -threads "$threads" \
+    -f rawvideo -pixel_format "$pixel_format" -video_size "${width}x${height}" -framerate "$framerate" -i "${tmpfile_padded}" \
+    $ffmpeg_codec_opts \
+    "${outfile}"
+
+# --- Post-process and Reporting ---
+if [[ $verbose -eq 1 ]]; then
+    if [[ -f "$outfile" ]]; then
+        echo "output file has $(stat -c %s "${outfile}") bytes"
+        echo -n "output file MD5: "
+        md5sum "${outfile}" | awk '{print $1}'
+    else
+        echo "error: output file was not created" >&2
+        exit 5
+    fi
+fi
+
