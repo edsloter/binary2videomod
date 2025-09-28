@@ -14,8 +14,8 @@ usage remains the same, but now you can use -c h265
    -p #% par2 parity argument (0-100) see usage below
    -p is used only when encoding for parity creation, -r is used for repair when decoding. 
 
-```
 usage:
+```
 ```
 // first install dependencies,
 ```
@@ -25,9 +25,6 @@ sudo apt install ffmpeg par2 -y
 // make executable
 ```
 chmod +x par2bin2vid vid2par2bin
-```
-```
-_
 ```
 // usage for encoding
 ```
