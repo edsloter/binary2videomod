@@ -1,3 +1,14 @@
+This is modified from https://github.com/hbhbnr/binary2video
+
+
+1) I've modified to prepend a fixed-size header to the binary data before sending it to FFmpeg. This header will contain the file size information. This is needed to correctly decode as buffer data is added to ensure the total size is a multiple of the video frame size, and removes the need to gzip the input file as the original script did. 
+2) added H265 with lossless tag
+3) modified video2binay logic to read the header for correct original file size and trim the unneeded buffer data to ensure the file matches the original input.
+
+usage remains the same, but now you can use -c h265
+
+------------------------------------------------------------------------------------------------------------------------------------------------------
+original readme below: 
 [![GPL 3.0](https://hbhbnr.github.io/badges/license-GPL--3.0-blue.svg)](LICENSE)
 [![GitHub Workflow Status](https://github.com/hbhbnr/binary2video/actions/workflows/codequality.yml/badge.svg)](https://github.com/hbhbnr/binary2video/actions/workflows/codequality.yml)
 
