@@ -106,23 +106,25 @@ trap 'rm -rf "$tmpdir"' EXIT
 
 source_for_video=""
 
+# ... (rest of the script)
+
 # Handle par2 creation if flag is set
 if [[ -n "$par2_redundancy" ]]; then
     if [[ $verbose -eq 1 ]]; then
         echo "Creating par2 recovery files with ${par2_redundancy}% redundancy."
     fi
 
-    # The -b flag ensures 'basename' handles paths with leading dashes correctly.
-    infilename_basename=$(basename -- "$infile")
+    # Consistent temporary filename
+    par2_input_name="par2tmpfile"
     
-    # Copy the file and ensure par2 can access it with a relative path
-    cp "$infile" "$tmpdir/$infilename_basename"
+    # Copy and rename the input file to the temporary name
+    cp "$infile" "$tmpdir/$par2_input_name"
 
     # Change into the temporary directory to avoid "out of basepath" errors
     pushd "$tmpdir" >/dev/null
 
-    # Run par2 with the relative filename and check for success
-    if ! par2 create -r"${par2_redundancy}" "$infilename_basename" >/dev/null; then
+    # Run par2 with the consistent filename and check for success
+    if ! par2 create -r"${par2_redundancy}" "$par2_input_name" >/dev/null; then
         echo "error: par2 failed to create recovery files." >&2
         popd >/dev/null # Go back to original directory
         exit 8
@@ -133,7 +135,7 @@ if [[ -n "$par2_redundancy" ]]; then
     fi
 
     # Combine par2 files and original file in the correct, numerically-sorted order.
-    # We use 'find' with a null separator and 'sort' to handle file names properly.
+    # The original file has the consistent name "$par2_input_name".
     mapfile -d '' combined_files < <(find . -maxdepth 1 -type f -print0 | sort -zV)
     
     # Use process substitution to avoid creating another temporary file.
