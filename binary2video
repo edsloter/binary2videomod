@@ -10,13 +10,17 @@ set -euo pipefail
 usage_and_exit() {
     echo "Usage: $(basename "$0") [-f fps] [-w width] [-h height] [-c codec] [-v] infile outfile" >&2
     echo "  Defaults: fps=1 width=320 height=240 codec=vp9" >&2
-    echo "  Supported codecs: vp9, h264, ffv1, ffv1l3" >&2
+    echo "  Supported codecs: vp9, h264, h265, ffv1, ffv1l3" >&2
     exit "$1"
 }
 
 check_dependencies() {
     if ! command -v ffmpeg &> /dev/null; then
         echo "error: required command 'ffmpeg' not found." >&2
+        exit 2
+    fi
+    if ! command -v xxd &> /dev/null; then
+        echo "error: required command 'xxd' not found." >&2
         exit 2
     fi
 }
@@ -54,6 +58,7 @@ shift $((OPTIND - 1))
 declare -A codec_options=(
     ["vp9"]="-c:v libvpx-vp9 -lossless 1"
     ["h264"]="-c:v libx264rgb -preset ultrafast -qp 0"
+    ["h265"]="-c:v libx265 -x265-params lossless=1"
     ["ffv1"]="-c:v ffv1 -level 1 -coder 1 -context 1 -g 1"
     ["ffv1l3"]="-c:v ffv1 -level 3 -threads 8 -coder 1 -context 1 -g 1 -slices 24 -slicecrc 1"
 )
@@ -96,7 +101,7 @@ tmpdir=$(mktemp -d --tmpdir binary2video.XXXXXXXXXX)
 trap 'rm -rf "$tmpdir"' EXIT
 tmpfile_padded="$tmpdir/infile.padded"
 
-# A more reliable way to create an 8-byte header from the file size
+# A reliable way to create an 8-byte header from the file size
 # This avoids issues with shell commands handling binary data and null bytes.
 { printf '%016x' "$size_infile"; } | xxd -r -p > "${tmpfile_padded}"
 cat "${infile}" >> "${tmpfile_padded}"
