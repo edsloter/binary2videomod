@@ -15,8 +15,7 @@ usage remains the same, but now you can use -c h265
    -p is used only when encoding for parity creation, -r is used for repair when decoding. 
 
 usage:
-```
-```
+
 // first install dependencies,
 ```
 sudo apt install ffmpeg par2 -y 
