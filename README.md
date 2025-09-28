@@ -35,6 +35,34 @@ chmod +x par2bin2vid vid2par2bin
 ```
 
 
+// example of successful recovery:
+```
+./vid2par2bin -v -r h265.mkv example.file
+Decoding video stream from 'h265.mkv' to temporary file '/tmp/vid2bin.raw.pcAcYv4ftg'
+Original file size from header (hex): c050a82
+Original file size from header (dec): 201696962
+Extracting 201696962 bytes from the decoded stream (skipping the first 8 bytes) to 'example.file'
+Extracted 40954230 bytes of PAR2 data to '/tmp/vid2par2bin.par2repair.3ua329osQd/temp_par2.par2'
+Running par2 repair using '/tmp/vid2par2bin.par2repair.3ua329osQd/temp_par2.par2' on '/tmp/vid2par2bin.par2repair.3ua329osQd/infile.binary'
+Loading "temp_par2.par2".
+Loaded 404 new packets including 400 recovery blocks
+
+There are 1 recoverable files and 0 other files.
+The block size used was 100832 bytes.
+There are a total of 2000 data blocks.
+The total size of the data files is 201656962 bytes.
+
+Verifying source files:
+
+Opening: "infile.binary"
+Target: "infile.binary" - found.
+
+All files are correct, repair is not required.
+PAR2 repair successful, moved repaired file to 'example.file'
+Output file has 201696962 bytes
+Output file MD5: 4af567c13294c0830975db09464f313e
+```
+
 
 
 ------------------------------------------------------------------------------------------------------------------------------------------------------
