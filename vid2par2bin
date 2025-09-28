@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+#
+# vid2bin: Reverses the bin2vid process to extract the original binary file.
+# The script reads an 8-byte header to determine the original file size
+# and correctly truncates the decoded raw video stream.
+
+usage_and_exit() {
+    echo "Usage: $(basename "$0") [-v] [-r] infile outfile" >&2
+    echo " mod Created by Ed Sloter (edsloter #a# gmail !dot! com)" >&2"
+    exit "$1"
+}
+
+check_dependencies() {
+    if ! command -v ffmpeg &> /dev/null; then
+        echo "error: required command 'ffmpeg' not found." >&2
+        exit 2
+    fi
+    if ! command -v xxd &> /dev/null; then
+        echo "error: required command 'xxd' not found." >&2
+        exit 2
+    fi
+    if [[ $run_par2_repair -eq 1 ]] && ! command -v par2 &> /dev/null; then
+        echo "error: required command 'par2' not found for repair." >&2
+        exit 2
+    fi
+}
+
+# --- Main logic ---
+
+# Check for help flag early
+if [[ "${1:-}" = '--help' ]]; then
+    usage_and_exit 0
+fi
+
+# --- Argument parsing ---
+verbose=0
+run_par2_repair=0
+while getopts 'vr' option; do
+    case "$option" in
+        v) verbose=1;;
+        r) run_par2_repair=1;;
+        ?) usage_and_exit 1;;
+    esac
+done
+shift $((OPTIND - 1))
+
+# --- Input/Output validation ---
+if [[ $# -ne 2 ]]; then
+    usage_and_exit 1
+fi
+
+infile="$1"
+outfile="$2"
+
+if [[ ! -r "$infile" ]]; then
+    echo "error: file '$infile' does not exist or is not readable" >&2
+    exit 4
+fi
+
+# Check dependencies
+check_dependencies
+
+pixel_format="rgb24"
+header_size=8 # The size of our header in bytes (64-bit integer)
+
+# Create a temporary file to store the decoded raw video stream
+tmpfile_decoded=$(mktemp --tmpdir vid2bin.raw.XXXXXXXXXX)
+trap 'rm -f "$tmpfile_decoded"' EXIT # Ensure cleanup
+
+if [[ "$verbose" -eq 1 ]]; then
+    echo "Decoding video stream from '$infile' to temporary file '$tmpfile_decoded'"
+fi
+
+# Decode the video stream to the temporary file
+# The `ffmpeg` command should be correct and complete here
+ffmpeg -y -hide_banner -loglevel error -i "${infile}" -f rawvideo -pix_fmt "${pixel_format}" "${tmpfile_decoded}" || {
+    echo "error: ffmpeg failed to decode the video stream." >&2
+    exit 5
+}
+
+# Read the header from the beginning of the temporary file
+# Ensure the `original_size_hex` is a clean hexadecimal string
+original_size_hex=$(head -c "${header_size}" "${tmpfile_decoded}" | xxd -p | tr -d '\n' | sed 's/^0*//') # remove leading zeros
+if [[ -z "$original_size_hex" ]]; then
+    original_size_hex="0" # Handle empty header as size 0 for error checking
+fi
+
+# Convert hexadecimal string to decimal
+original_size_dec=$((16#$original_size_hex))
+
+if [[ "$verbose" -eq 1 ]]; then
+    echo "Original file size from header (hex): $original_size_hex"
+    echo "Original file size from header (dec): $original_size_dec"
+fi
+
+# Check for potential header corruption or an incorrect file
+if [[ "$original_size_dec" -eq 0 && "$original_size_hex" != "0" ]]; then
+    echo "error: failed to read a valid file size from header. Is the input file valid or was it encoded correctly by bin2vid?" >&2
+    exit 6
+fi
+
+# Extract the actual data (after the header) and truncate to the original size
+if [[ "$verbose" -eq 1 ]]; then
+    echo "Extracting $original_size_dec bytes from the decoded stream (skipping the first $header_size bytes) to '$outfile'"
+fi
+
+dd if="${tmpfile_decoded}" of="${outfile}" bs=1 skip="${header_size}" count="${original_size_dec}" status=none || {
+    echo "error: failed to extract data using dd." >&2
+    exit 7
+}
+
+# --- PAR2 Repair ---
+if [[ $run_par2_repair -eq 1 ]]; then
+    # Calculate total decoded size
+    total_decoded_size=$(stat -c %s "${tmpfile_decoded}")
+    par2_offset=$((header_size + original_size_dec))
+    extra_size=$((total_decoded_size - par2_offset))
+
+    if [[ $extra_size -gt 0 ]]; then
+        tmp_par2_dir=$(mktemp -d --tmpdir vid2par2bin.par2repair.XXXXXXXXXX)
+        temp_par2_file="$tmp_par2_dir/temp_par2.par2"
+        infile_binary="$tmp_par2_dir/infile.binary"
+
+        # Move outfile to temp folder and rename
+        mv "$outfile" "$infile_binary"
+
+        # Extract PAR2 data
+        dd if="${tmpfile_decoded}" of="${temp_par2_file}" bs=1 skip="${par2_offset}" count="${extra_size}" status=none
+
+        if [[ "$verbose" -eq 1 ]]; then
+            echo "Extracted $extra_size bytes of PAR2 data to '$temp_par2_file'"
+            echo "Running par2 repair using '$temp_par2_file' on '$infile_binary'"
+        fi
+
+        # Run par2 repair
+        if par2 repair "$temp_par2_file"; then
+            mv "$infile_binary" "$outfile"
+            if [[ "$verbose" -eq 1 ]]; then
+                echo "PAR2 repair successful, moved repaired file to '$outfile'"
+            fi
+        else
+            echo "error: par2 repair failed." >&2
+            rm -rf "$tmp_par2_dir"
+            exit 9
+        fi
+
+        rm -rf "$tmp_par2_dir"
+    else
+        if [[ "$verbose" -eq 1 ]]; then
+            echo "No PAR2 data found after binary, skipping par2 repair."
+        fi
+    fi
+fi
+
+# --- Post-process ---
+if [[ "$verbose" -eq 1 ]]; then
+    if [[ -f "$outfile" ]]; then
+        echo "Output file has $(stat -c %s "${outfile}") bytes"
+        echo -n "Output file MD5: "
+        md5sum "${outfile}" | awk '{print $1}'
+    else
+        echo "error: output file was not created" >&2
+        exit 8
+    fi
+fi
