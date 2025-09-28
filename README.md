@@ -13,7 +13,8 @@ usage remains the same, but now you can use -c h265
 4) par2bin2vid and vid2par2bin add support for redundancy creation via par2, I figure you can never go wrong, going to try testing it on some video sharing sites to see if things are recoverable after re-encoding
    -p #% par2 parity argument (0-100) see usage below
    -p is used only when encoding for parity creation, -r is used for repair when decoding. 
-   
+
+```
 usage:
 ```
 // first install dependencies,
