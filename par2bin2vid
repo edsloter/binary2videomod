@@ -52,7 +52,7 @@ while getopts 'f:w:h:c:p:v' option; do
         c) codec="$OPTARG";;
         p)
             if ! command -v par2 &> /dev/null; then
-                echo "error: par2 is not installed but the -p flag was used." >&2
+                echo "error: 'par2' is not installed but the -p flag was used." >&2
                 exit 6
             fi
             if ! [[ "$OPTARG" =~ ^[0-9]+$ ]] || [[ "$OPTARG" -lt 1 || "$OPTARG" -gt 100 ]]; then
@@ -103,85 +103,93 @@ blocksize=$((width * height * 3))
 
 tmpdir=$(mktemp -d --tmpdir binary2video.XXXXXXXXXX)
 trap 'rm -rf "$tmpdir"' EXIT
-tmpfile_padded="$tmpdir/infile.padded"
-tmpfile_combined="$tmpdir/infile.combined"
+
+source_for_video=""
 
 # Handle par2 creation if flag is set
 if [[ -n "$par2_redundancy" ]]; then
     if [[ $verbose -eq 1 ]]; then
         echo "Creating par2 recovery files with ${par2_redundancy}% redundancy."
     fi
-    
-    # Store the basename of the input file
+
+    # The -b flag ensures 'basename' handles paths with leading dashes correctly.
     infilename_basename=$(basename -- "$infile")
     
-    # Copy the input file into the temporary directory for par2 to process
+    # Copy the file and ensure par2 can access it with a relative path
     cp "$infile" "$tmpdir/$infilename_basename"
-    
-    # Change into the temporary directory to avoid "out of basepath" error
+
+    # Change into the temporary directory to avoid "out of basepath" errors
     pushd "$tmpdir" >/dev/null
-    
-    # Run par2 with the relative filename
-    par2 create -r"$par2_redundancy" "$infilename_basename"
-    
-    # Return to the original directory
-    popd >/dev/null
-    
+
+    # Run par2 with the relative filename and check for success
+    if ! par2 create -r"${par2_redundancy}" "$infilename_basename" >/dev/null; then
+        echo "error: par2 failed to create recovery files." >&2
+        popd >/dev/null # Go back to original directory
+        exit 8
+    fi
+
     if [[ $verbose -eq 1 ]]; then
         echo "Combining par2 files with source file."
     fi
+
+    # Combine par2 files and original file in the correct, numerically-sorted order.
+    # We use 'find' with a null separator and 'sort' to handle file names properly.
+    mapfile -d '' combined_files < <(find . -maxdepth 1 -type f -print0 | sort -zV)
     
-    # Use glob to ensure par2 files (e.g., .par2, .vol*) are first, then the original file.
-    # Note: `cd` is needed here to expand the glob correctly from the temporary directory.
-    ( cd "$tmpdir" && cat *.par2 "$infilename_basename" ) > "$tmpfile_combined"
+    # Use process substitution to avoid creating another temporary file.
+    source_for_video=$(mktemp)
+    trap 'rm -rf "$tmpdir" "$source_for_video"' EXIT
+    
+    cat "${combined_files[@]}" > "$source_for_video"
+
+    # Return to the original directory
+    popd >/dev/null
+
 else
-    # If no par2, the infile is the source for the video encoding
-    cp "$infile" "${tmpfile_combined}"
+    source_for_video="$infile"
 fi
 
-# Calculate sizes based on combined file if par2 was used, otherwise the original file.
-size_source=$(stat -c %s "${tmpfile_combined}")
+size_source=$(stat -c %s "$source_for_video")
 
 if [[ $verbose -eq 1 ]]; then
     echo "parameters: fps=$framerate width=$width height=$height codec=$codec"
     echo "blocksize is $blocksize bytes"
     echo "source file has $size_source bytes"
-    echo "source file MD5: $(md5sum "${tmpfile_combined}" | awk '{print $1}')"
+    echo "source file MD5: $(md5sum "$source_for_video" | awk '{print $1}')"
 fi
 
-# --- Header creation and padding using a temporary file ---
-{ printf '%016x' "$size_source"; } | xxd -r -p > "${tmpfile_padded}"
-cat "${tmpfile_combined}" >> "${tmpfile_padded}"
+# --- Pipe header, data, and padding to ffmpeg ---
 
-# Calculate and apply padding
-size_with_header=$(stat -c %s "${tmpfile_padded}")
-padding_needed=$((blocksize - (size_with_header % blocksize)))
-if [[ padding_needed -eq blocksize ]]; then
-    padding_needed=0
-fi
+# Calculate and apply padding using a robust calculation
+padding_needed=$(((blocksize - (size_source + header_size) % blocksize) % blocksize))
 
 if [[ $verbose -eq 1 ]]; then
     echo "header has $header_size bytes"
     echo "padding needed: $padding_needed bytes"
 fi
 
-# Append padding bytes
-printf '\0%.0s' $(seq 1 "$padding_needed") >> "${tmpfile_padded}"
-
-if [[ $verbose -eq 1 ]]; then
-    echo "padded file has $(stat -c %s "${tmpfile_padded}") bytes"
-fi
-
-# Run ffmpeg command using the temporary padded file as input
+# Pipe everything directly into ffmpeg to avoid large temporary files
 ffmpeg_log_level="error"
 if [[ $verbose -eq 1 ]]; then
     ffmpeg_log_level="info"
 fi
 
-ffmpeg -y -hide_banner -loglevel "$ffmpeg_log_level" \
-    -f rawvideo -pixel_format "$pixel_format" -video_size "${width}x${height}" -framerate "$framerate" -i "${tmpfile_padded}" \
+{
+    printf '%016x' "$size_source" | xxd -r -p
+    cat "$source_for_video"
+    if [[ "$padding_needed" -gt 0 ]]; then
+        printf '\0%.0s' $(seq 1 "$padding_needed")
+    fi
+} | ffmpeg -y -hide_banner -loglevel "$ffmpeg_log_level" \
+    -f rawvideo -pixel_format "$pixel_format" -video_size "${width}x${height}" -framerate "$framerate" -i - \
     $ffmpeg_codec_opts \
     "${outfile}"
+
+# Check ffmpeg exit status
+if [[ $? -ne 0 ]]; then
+    echo "error: ffmpeg failed to encode the video." >&2
+    exit 5
+fi
 
 # --- Post-process ---
 if [[ $verbose -eq 1 ]]; then
